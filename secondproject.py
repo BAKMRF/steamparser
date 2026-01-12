@@ -51,7 +51,7 @@ st.sidebar.title("⚙️ Настройки")
 
 API_KEY = st.sidebar.text_input(
     "Steam Web API Key",
-    value="",
+    value="123",
     type="password",
     help="Получить можно на https://steamcommunity.com/dev/apikey"
 )
