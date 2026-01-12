@@ -1,10 +1,10 @@
 """
-Steam Profile Parser - Streamlit Web App
-========================================
-Веб-интерфейс для парсинга Steam профилей
+Steam Profile Parser - Streamlit Web App with Analytics
+=======================================================
+Веб-интерфейс для парсинга Steam профилей с аналитикой
 
 Установка:
-  pip install streamlit requests beautifulsoup4 openpyxl pandas
+  pip install streamlit requests beautifulsoup4 openpyxl pandas plotly
 
 Запуск:
   streamlit run app.py
@@ -21,6 +21,8 @@ from openpyxl import load_workbook
 from openpyxl.styles import Font, PatternFill, Alignment
 import json
 import io
+import plotly.express as px
+import plotly.graph_objects as go
 
 # Настройка страницы
 st.set_page_config(
@@ -43,11 +45,15 @@ HEADERS = {
     "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) Chrome/120.0"
 }
 
-# Инициализация session state для API ключа
+# Инициализация session state
 if 'api_key' not in st.session_state:
     st.session_state.api_key = None
 if 'api_key_confirmed' not in st.session_state:
     st.session_state.api_key_confirmed = False
+if 'parsed_results' not in st.session_state:
+    st.session_state.parsed_results = None
+if 'current_page' not in st.session_state:
+    st.session_state.current_page = "parser"
 
 # -------------------------
 # Проверка API ключа при первом входе
@@ -88,10 +94,10 @@ if not st.session_state.api_key_confirmed:
 API_KEY = st.session_state.api_key
 
 # -------------------------
-# Sidebar - Настройки
+# Sidebar - Навигация
 # -------------------------
 
-st.sidebar.title("⚙️ Настройки")
+st.sidebar.title("🎮 Steam Parser")
 
 # Показываем замаскированный API ключ
 masked_key = API_KEY[:4] + "..." + API_KEY[-4:]
@@ -103,26 +109,24 @@ if st.sidebar.button("🔄 Изменить API ключ", use_container_width=T
 
 st.sidebar.markdown("---")
 
-delay = st.sidebar.slider(
-    "Задержка между профилями (сек)",
-    min_value=1,
-    max_value=10,
-    value=3,
-    help="Чем больше задержка, тем меньше шанс получить блокировку от Steam"
-)
+# Навигация между страницами
+st.sidebar.subheader("📄 Навигация")
+
+if st.sidebar.button("🔍 Парсер профилей", use_container_width=True, 
+                     type="primary" if st.session_state.current_page == "parser" else "secondary"):
+    st.session_state.current_page = "parser"
+    st.rerun()
+
+# Показываем кнопку аналитики только если есть данные
+if st.session_state.parsed_results:
+    if st.sidebar.button("📊 Аналитика и графики", use_container_width=True,
+                         type="primary" if st.session_state.current_page == "analytics" else "secondary"):
+        st.session_state.current_page = "analytics"
+        st.rerun()
+    
+    st.sidebar.success(f"✅ Загружено профилей: {len(st.session_state.parsed_results)}")
 
 st.sidebar.markdown("---")
-st.sidebar.markdown("""
-### 📖 Инструкция
-1. Вставьте ссылки на профили (по одной на строку)
-2. Нажмите **Начать парсинг**
-3. Дождитесь завершения
-4. Скачайте Excel файл
-
-### ℹ️ Требования
-- Профили должны быть **публичными**
-- Нужен валидный **API ключ**
-""")
 
 # -------------------------
 # Utils & API Functions
@@ -402,104 +406,325 @@ def create_excel(results):
 
 
 # -------------------------
-# Main Interface
+# PAGE 1: Parser
 # -------------------------
 
-st.title("🎮 Steam Profile Parser")
-st.markdown("Парсинг публичных Steam профилей с сохранением в Excel")
+def render_parser_page():
+    st.title("🎮 Steam Profile Parser")
+    st.markdown("Парсинг публичных Steam профилей с сохранением в Excel")
 
-# Поле ввода профилей
-profile_input = st.text_area(
-    "Введите ссылки на профили (по одной на строку)",
-    height=200,
-    placeholder="https://steamcommunity.com/profiles/76561199173282872\nhttps://steamcommunity.com/id/username"
-)
+    # Настройки парсинга
+    delay = st.slider(
+        "⏱️ Задержка между профилями (секунды)",
+        min_value=1,
+        max_value=10,
+        value=3,
+        help="Чем больше задержка, тем меньше шанс получить блокировку от Steam"
+    )
 
-col1, col2, col3 = st.columns([1, 1, 3])
+    # Поле ввода профилей
+    profile_input = st.text_area(
+        "Введите ссылки на профили (по одной на строку)",
+        height=200,
+        placeholder="https://steamcommunity.com/profiles/76561199173282872\nhttps://steamcommunity.com/id/username"
+    )
 
-with col1:
-    start_button = st.button("🚀 Начать парсинг", type="primary", use_container_width=True)
+    col1, col2, col3 = st.columns([1, 1, 3])
 
-with col2:
-    if st.button("🗑️ Очистить", use_container_width=True):
-        st.rerun()
+    with col1:
+        start_button = st.button("🚀 Начать парсинг", type="primary", use_container_width=True)
 
-# Парсинг
-if start_button and profile_input:
-    profile_urls = [url.strip() for url in profile_input.split('\n') if url.strip()]
-    
-    if not profile_urls:
-        st.error("❌ Введите хотя бы одну ссылку на профиль")
-    else:
-        st.info(f"📊 Всего профилей для обработки: {len(profile_urls)}")
+    with col2:
+        if st.button("🗑️ Очистить", use_container_width=True):
+            st.session_state.parsed_results = None
+            st.rerun()
+
+    # Парсинг
+    if start_button and profile_input:
+        profile_urls = [url.strip() for url in profile_input.split('\n') if url.strip()]
         
-        # Прогресс бар
-        progress_bar = st.progress(0)
-        status_text = st.empty()
-        
-        results = []
-        result_container = st.container()
-        
-        for i, url in enumerate(profile_urls):
-            try:
-                status_text.text(f"Обработка {i+1}/{len(profile_urls)}: {url}")
-                
-                profile_data = collect_profile(url)
-                results.append(profile_data)
-                
-                # Показываем результат
-                with result_container:
-                    if "error" in profile_data:
-                        st.error(f"❌ {url} - {profile_data['error']}")
-                    else:
-                        st.success(f"✅ {profile_data['nickname']} | Игр: {len(profile_data['games'])} | Друзей: {len(profile_data['friends'])}")
-                
-                # Обновляем прогресс
-                progress_bar.progress((i + 1) / len(profile_urls))
-                
-                # Задержка
-                if i < len(profile_urls) - 1:
-                    time.sleep(delay)
-                    
-            except Exception as e:
-                with result_container:
-                    st.error(f"⚠️ Ошибка при обработке {url}: {str(e)}")
-                results.append({"steamid": url, "error": str(e)})
-        
-        status_text.text("✅ Парсинг завершён!")
-        
-        # Статистика
-        st.markdown("---")
-        st.subheader("📈 Статистика")
-        
-        col1, col2, col3, col4 = st.columns(4)
-        
-        success_count = len([r for r in results if "error" not in r])
-        total_games = sum(len(r.get("games", [])) for r in results if "error" not in r)
-        total_friends = sum(len(r.get("friends", [])) for r in results if "error" not in r)
-        total_groups = sum(len(r.get("groups", [])) for r in results if "error" not in r)
-        
-        col1.metric("Успешно обработано", f"{success_count}/{len(profile_urls)}")
-        col2.metric("Всего игр", total_games)
-        col3.metric("Всего друзей", total_friends)
-        col4.metric("Всего групп", total_groups)
-        
-        # Кнопка скачивания
-        if results:
-            st.markdown("---")
-            excel_file = create_excel(results)
-            timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
+        if not profile_urls:
+            st.error("❌ Введите хотя бы одну ссылку на профиль")
+        else:
+            st.info(f"📊 Всего профилей для обработки: {len(profile_urls)}")
             
-            st.download_button(
-                label="📥 Скачать Excel файл",
-                data=excel_file,
-                file_name=f"steam_data_{timestamp}.xlsx",
-                mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
-                type="primary"
-            )
+            # Прогресс бар
+            progress_bar = st.progress(0)
+            status_text = st.empty()
+            
+            results = []
+            result_container = st.container()
+            
+            for i, url in enumerate(profile_urls):
+                try:
+                    status_text.text(f"Обработка {i+1}/{len(profile_urls)}: {url}")
+                    
+                    profile_data = collect_profile(url)
+                    results.append(profile_data)
+                    
+                    # Показываем результат
+                    with result_container:
+                        if "error" in profile_data:
+                            st.error(f"❌ {url} - {profile_data['error']}")
+                        else:
+                            st.success(f"✅ {profile_data['nickname']} | Игр: {len(profile_data['games'])} | Друзей: {len(profile_data['friends'])}")
+                    
+                    # Обновляем прогресс
+                    progress_bar.progress((i + 1) / len(profile_urls))
+                    
+                    # Задержка
+                    if i < len(profile_urls) - 1:
+                        time.sleep(delay)
+                        
+                except Exception as e:
+                    with result_container:
+                        st.error(f"⚠️ Ошибка при обработке {url}: {str(e)}")
+                    results.append({"steamid": url, "error": str(e)})
+            
+            status_text.text("✅ Парсинг завершён!")
+            
+            # Сохраняем результаты в session state
+            st.session_state.parsed_results = results
+            
+            # Статистика
+            st.markdown("---")
+            st.subheader("📈 Статистика")
+            
+            col1, col2, col3, col4 = st.columns(4)
+            
+            success_count = len([r for r in results if "error" not in r])
+            total_games = sum(len(r.get("games", [])) for r in results if "error" not in r)
+            total_friends = sum(len(r.get("friends", [])) for r in results if "error" not in r)
+            total_groups = sum(len(r.get("groups", [])) for r in results if "error" not in r)
+            
+            col1.metric("Успешно обработано", f"{success_count}/{len(profile_urls)}")
+            col2.metric("Всего игр", total_games)
+            col3.metric("Всего друзей", total_friends)
+            col4.metric("Всего групп", total_groups)
+            
+            # Кнопки действий
+            st.markdown("---")
+            col1, col2 = st.columns(2)
+            
+            with col1:
+                # Кнопка скачивания
+                if results:
+                    excel_file = create_excel(results)
+                    timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
+                    
+                    st.download_button(
+                        label="📥 Скачать Excel файл",
+                        data=excel_file,
+                        file_name=f"steam_data_{timestamp}.xlsx",
+                        mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+                        type="secondary",
+                        use_container_width=True
+                    )
+            
+            with col2:
+                # Кнопка перехода к аналитике
+                if st.button("📊 Перейти к аналитике", type="primary", use_container_width=True):
+                    st.session_state.current_page = "analytics"
+                    st.rerun()
 
-elif start_button:
-    st.warning("⚠️ Введите ссылки на профили")
+    elif start_button:
+        st.warning("⚠️ Введите ссылки на профили")
+
+
+# -------------------------
+# PAGE 2: Analytics
+# -------------------------
+
+def render_analytics_page():
+    st.title("📊 Аналитика Steam профилей")
+    
+    if not st.session_state.parsed_results:
+        st.warning("⚠️ Нет данных для анализа. Сначала выполните парсинг профилей.")
+        if st.button("← Вернуться к парсеру"):
+            st.session_state.current_page = "parser"
+            st.rerun()
+        return
+    
+    results = st.session_state.parsed_results
+    successful_results = [r for r in results if "error" not in r]
+    
+    if not successful_results:
+        st.error("❌ Нет успешно спарсенных профилей для анализа")
+        return
+    
+    st.markdown("---")
+    
+    # CS2 Analysis
+    st.header("🎯 Сравнение по Counter-Strike 2")
+    
+    cs2_data = []
+    CS2_APPIDS = [730, 710]  # CS:GO и CS2
+    
+    for profile in successful_results:
+        nickname = profile['nickname']
+        cs2_time = 0
+        
+        for game in profile.get('games', []):
+            if game['appid'] in CS2_APPIDS:
+                playtime = game.get('playtime', 0)
+                if isinstance(playtime, str):
+                    try:
+                        playtime = float(playtime) * 60
+                    except:
+                        playtime = 0
+                cs2_time += playtime
+        
+        cs2_data.append({
+            'nickname': nickname,
+            'hours': round(cs2_time / 60, 1),
+            'minutes': int(cs2_time)
+        })
+    
+    # Сортируем по часам
+    cs2_data.sort(key=lambda x: x['hours'], reverse=True)
+    df_cs2 = pd.DataFrame(cs2_data)
+    
+    if df_cs2['hours'].sum() == 0:
+        st.info("ℹ️ Ни у кого из пользователей не найдено времени в Counter-Strike 2")
+    else:
+        # График 1: Столбчатая диаграмма
+        fig_bar = go.Figure(data=[
+            go.Bar(
+                x=df_cs2['nickname'],
+                y=df_cs2['hours'],
+                text=df_cs2['hours'],
+                textposition='auto',
+                marker=dict(
+                    color=df_cs2['hours'],
+                    colorscale='Viridis',
+                    showscale=False
+                )
+            )
+        ])
+        
+        fig_bar.update_layout(
+            title="⏱️ Наигранные часы в CS2",
+            xaxis_title="Игрок",
+            yaxis_title="Часы",
+            height=500,
+            showlegend=False
+        )
+        
+        st.plotly_chart(fig_bar, use_container_width=True)
+        
+        # График 2: Круговая диаграмма
+        col1, col2 = st.columns(2)
+        
+        with col1:
+            fig_pie = go.Figure(data=[
+                go.Pie(
+                    labels=df_cs2['nickname'],
+                    values=df_cs2['hours'],
+                    hole=0.3,
+                    textinfo='label+percent',
+                    marker=dict(colors=px.colors.qualitative.Set3)
+                )
+            ])
+            
+            fig_pie.update_layout(
+                title="📊 Распределение времени в CS2",
+                height=400
+            )
+            
+            st.plotly_chart(fig_pie, use_container_width=True)
+        
+        with col2:
+            # Таблица с рейтингом
+            st.subheader("🏆 Топ игроков")
+            
+            for idx, row in df_cs2.iterrows():
+                if idx == 0:
+                    st.success(f"🥇 {row['nickname']}: **{row['hours']}** часов")
+                elif idx == 1:
+                    st.info(f"🥈 {row['nickname']}: **{row['hours']}** часов")
+                elif idx == 2:
+                    st.warning(f"🥉 {row['nickname']}: **{row['hours']}** часов")
+                else:
+                    st.write(f"{idx + 1}. {row['nickname']}: **{row['hours']}** часов")
+    
+    # Дополнительная статистика
+    st.markdown("---")
+    st.header("📈 Общая статистика")
+    
+    col1, col2, col3 = st.columns(3)
+    
+    with col1:
+        total_cs2_hours = df_cs2['hours'].sum()
+        st.metric("Общее время в CS2", f"{total_cs2_hours:,.1f} часов")
+    
+    with col2:
+        avg_cs2_hours = df_cs2['hours'].mean()
+        st.metric("Среднее время", f"{avg_cs2_hours:,.1f} часов")
+    
+    with col3:
+        max_cs2_hours = df_cs2['hours'].max()
+        st.metric("Максимум", f"{max_cs2_hours:,.1f} часов")
+    
+    # Топ игр среди всех пользователей
+    st.markdown("---")
+    st.header("🎮 Топ-10 самых популярных игр")
+    
+    all_games = {}
+    for profile in successful_results:
+        for game in profile.get('games', []):
+            game_name = game.get('name', 'Unknown')
+            playtime = game.get('playtime', 0)
+            
+            if isinstance(playtime, str):
+                try:
+                    playtime = float(playtime) * 60
+                except:
+                    playtime = 0
+            
+            if game_name in all_games:
+                all_games[game_name] += playtime
+            else:
+                all_games[game_name] = playtime
+    
+    # Сортируем и берем топ-10
+    top_games = sorted(all_games.items(), key=lambda x: x[1], reverse=True)[:10]
+    
+    if top_games:
+        df_top_games = pd.DataFrame([
+            {'game': game, 'hours': round(hours / 60, 1)}
+            for game, hours in top_games
+        ])
+        
+        fig_top = go.Figure(data=[
+            go.Bar(
+                y=df_top_games['game'],
+                x=df_top_games['hours'],
+                orientation='h',
+                text=df_top_games['hours'],
+                textposition='auto',
+                marker=dict(color='#1f77b4')
+            )
+        ])
+        
+        fig_top.update_layout(
+            title="Игры с наибольшим общим временем",
+            xaxis_title="Часы",
+            yaxis_title="Игра",
+            height=500,
+            yaxis={'categoryorder': 'total ascending'}
+        )
+        
+        st.plotly_chart(fig_top, use_container_width=True)
+
+
+# -------------------------
+# Main Router
+# -------------------------
+
+if st.session_state.current_page == "parser":
+    render_parser_page()
+elif st.session_state.current_page == "analytics":
+    render_analytics_page()
 
 # Footer
 st.markdown("---")
