@@ -43,18 +43,65 @@ HEADERS = {
     "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) Chrome/120.0"
 }
 
+# Инициализация session state для API ключа
+if 'api_key' not in st.session_state:
+    st.session_state.api_key = None
+if 'api_key_confirmed' not in st.session_state:
+    st.session_state.api_key_confirmed = False
+
+# -------------------------
+# Проверка API ключа при первом входе
+# -------------------------
+
+if not st.session_state.api_key_confirmed:
+    st.title("🔑 Настройка Steam API Key")
+    st.markdown("""
+    Для работы парсера необходим **Steam Web API Key**.
+    
+    ### Как получить API ключ:
+    1. Перейдите на [steamcommunity.com/dev/apikey](https://steamcommunity.com/dev/apikey)
+    2. Войдите в свой Steam аккаунт
+    3. Заполните форму (Domain Name можно указать `localhost`)
+    4. Скопируйте полученный ключ и вставьте ниже
+    """)
+    
+    api_key_input = st.text_input(
+        "Введите ваш Steam API Key",
+        type="password",
+        placeholder="XXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXX"
+    )
+    
+    col1, col2 = st.columns([1, 4])
+    with col1:
+        if st.button("✅ Подтвердить", type="primary", use_container_width=True):
+            if api_key_input and len(api_key_input) == 32:
+                st.session_state.api_key = api_key_input
+                st.session_state.api_key_confirmed = True
+                st.rerun()
+            else:
+                st.error("❌ API ключ должен содержать 32 символа")
+    
+    st.info("💡 **Примечание:** API ключ сохраняется только для текущей сессии и не передается третьим лицам")
+    st.stop()
+
+# API ключ подтвержден - устанавливаем глобальную переменную
+API_KEY = st.session_state.api_key
+
 # -------------------------
 # Sidebar - Настройки
 # -------------------------
 
 st.sidebar.title("⚙️ Настройки")
 
-API_KEY = st.sidebar.text_input(
-    "Steam Web API Key",
-    value="123",
-    type="password",
-    help="Получить можно на https://steamcommunity.com/dev/apikey"
-)
+# Показываем замаскированный API ключ
+masked_key = API_KEY[:4] + "..." + API_KEY[-4:]
+st.sidebar.info(f"🔑 API Key: `{masked_key}`")
+
+if st.sidebar.button("🔄 Изменить API ключ", use_container_width=True):
+    st.session_state.api_key_confirmed = False
+    st.rerun()
+
+st.sidebar.markdown("---")
 
 delay = st.sidebar.slider(
     "Задержка между профилями (сек)",
