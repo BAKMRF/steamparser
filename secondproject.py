@@ -39,13 +39,6 @@ st.markdown("""
         max-width: 1400px;
         margin: 0 auto;
     }
-    .metric-card {
-        background: linear-gradient(135deg, #667eea 0%, #764ba2 100%);
-        padding: 20px;
-        border-radius: 10px;
-        color: white;
-        text-align: center;
-    }
     </style>
 """, unsafe_allow_html=True)
 
@@ -78,6 +71,22 @@ COUNTRY_NAMES = {
     'SA': 'Saudi Arabia', 'AE': 'United Arab Emirates', 'IL': 'Israel', 'EG': 'Egypt',
     'ZA': 'South Africa', 'AR': 'Argentina', 'CL': 'Chile', 'CO': 'Colombia', 'PE': 'Peru',
     'VE': 'Venezuela', 'UY': 'Uruguay', 'EC': 'Ecuador', 'BO': 'Bolivia', 'PY': 'Paraguay'
+}
+
+# Координаты столиц для точек на карте
+COUNTRY_COORDS = {
+    'US': (37.0902, -95.7129), 'RU': (61.5240, 105.3188), 'DE': (51.1657, 10.4515),
+    'GB': (55.3781, -3.4360), 'FR': (46.2276, 2.2137), 'CN': (35.8617, 104.1954),
+    'JP': (36.2048, 138.2529), 'BR': (-14.2350, -51.9253), 'CA': (56.1304, -106.3468),
+    'AU': (-25.2744, 133.7751), 'IT': (41.8719, 12.5674), 'ES': (40.4637, -3.7492),
+    'MX': (23.6345, -102.5528), 'KR': (35.9078, 127.7669), 'NL': (52.1326, 5.2913),
+    'PL': (51.9194, 19.1451), 'SE': (60.1282, 18.6435), 'NO': (60.4720, 8.4689),
+    'FI': (61.9241, 25.7482), 'DK': (56.2639, 9.5018), 'BE': (50.5039, 4.4699),
+    'CH': (46.8182, 8.2275), 'AT': (47.5162, 14.5501), 'CZ': (49.8175, 15.4730),
+    'UA': (48.3794, 31.1656), 'TR': (38.9637, 35.2433), 'GR': (39.0742, 21.8243),
+    'PT': (39.3999, -8.2245), 'HU': (47.1625, 19.5033), 'RO': (45.9432, 24.9668),
+    'IN': (20.5937, 78.9629), 'SG': (1.3521, 103.8198), 'SA': (23.8859, 45.0792),
+    'AE': (23.4241, 53.8478), 'ZA': (-30.5595, 22.9375), 'AR': (-38.4161, -63.6167)
 }
 
 # -------------------------
@@ -238,7 +247,8 @@ def get_games(steamid):
         {
             "appid": g["appid"],
             "name": g.get("name"),
-            "playtime": g.get("playtime_forever", 0)
+            "playtime": g.get("playtime_forever", 0),
+            "playtime_2weeks": g.get("playtime_2weeks", 0)
         }
         for g in games
     ]
@@ -257,12 +267,44 @@ def get_games_from_html(profile_url):
                 "appid": g.get("appid"),
                 "name": g.get("name"),
                 "playtime": g.get("hours_forever", "0").replace(",", ""),
+                "playtime_2weeks": 0,
                 "logo": g.get("logo")
             })
         time.sleep(0.5)
         return games
     except:
         return []
+
+def get_game_price(appid):
+    try:
+        url = "https://store.steampowered.com/api/appdetails"
+        params = {"appids": appid, "cc": "us", "filters": "price_overview"}
+        r = requests.get(url, params=params, timeout=10)
+        data = r.json()
+        
+        if str(appid) in data and data[str(appid)].get("success"):
+            price_data = data[str(appid)].get("data", {}).get("price_overview")
+            if price_data:
+                return price_data.get("final", 0) / 100
+        return 0
+    except:
+        return 0
+
+def calculate_library_value(games):
+    total_value = 0
+    processed_games = 0
+    
+    for game in games:
+        appid = game.get("appid")
+        if appid:
+            price = get_game_price(appid)
+            total_value += price
+            processed_games += 1
+            
+            if processed_games % 5 == 0:
+                time.sleep(1)
+    
+    return round(total_value, 2)
 
 def get_friends(steamid):
     url = "https://api.steampowered.com/ISteamUser/GetFriendList/v1/"
@@ -566,171 +608,220 @@ def render_geography_page():
     
     country_counts = Counter(countries)
     
-    # Карта мира
+    # Подготовка данных для карты с точками
     df_map = pd.DataFrame([
         {
             'country': COUNTRY_NAMES.get(code, code),
             'code': code,
-            'count': count
+            'count': count,
+            'lat': 0,
+            'lon': 0
         }
         for code, count in country_counts.items()
     ])
     
-    fig_map = px.choropleth(
-        df_map,
-        locations='code',
+    df_map['lat'] = df_map['code'].map(lambda x: COUNTRY_COORDS.get(x, (0, 0))[0])
+    df_map['lon'] = df_map['code'].map(lambda x: COUNTRY_COORDS.get(x, (0, 0))[1])
+    
+    # Создаем карту с хороплетом и точками
+    fig_map = go.Figure()
+    
+    # Добавляем хороплет (закрашенные страны)
+    fig_map.add_trace(go.Choropleth(
+        locations=df_map['code'],
         locationmode='ISO-3',
-        color='count',
-        hover_name='country',
-        hover_data={'code': False, 'count': True},
-        color_continuous_scale='Viridis',
-        title='Распределение пользователей по миру'
-    )
+        z=df_map['count'],
+        colorscale='Viridis',
+        showscale=True,
+        colorbar=dict(title="Пользователей"),
+        hovertemplate='<b>%{text}</b><br>Пользователей: %{z}<extra></extra>',
+        text=df_map['country']
+    ))
+    
+    # Добавляем точки-маркеры для большей наглядности
+    fig_map.add_trace(go.Scattergeo(
+        lon=df_map['lon'],
+        lat=df_map['lat'],
+        text=df_map['country'],
+        customdata=df_map['count'],
+        mode='markers+text',
+        marker=dict(
+            size=df_map['count'] * 15,
+            color='red',
+            symbol='circle',
+            line=dict(width=2, color='white')
+        ),
+        textposition='top center',
+        textfont=dict(size=10, color='white', family='Arial Black'),
+        hovertemplate='<b>%{text}</b><br>Пользователей: %{customdata}<extra></extra>',
+        showlegend=False
+    ))
     
     fig_map.update_layout(
-        height=500,
+        title='🌍 Распределение пользователей по миру',
+        height=600,
         geo=dict(
-            showframe=False,
-            showcoastlines=True,
-            projection_type='natural earth'
-        )
+        showframe=False,
+        showcoastlines=True,
+        projection_type='natural_earth',
+        bgcolor='rgba(0,0,0,0)'))
+    st.plotly_chart(fig_map, use_container_width=True)
+
+# Статистика по странам
+st.markdown("---")
+st.header("📊 Топ стран")
+
+col1, col2 = st.columns([2, 1])
+
+with col1:
+    df_countries = pd.DataFrame([
+        {'Страна': COUNTRY_NAMES.get(code, code), 'Пользователей': count}
+        for code, count in country_counts.most_common()
+    ])
+    
+    fig_bar = px.bar(
+        df_countries,
+        x='Пользователей',
+        y='Страна',
+        orientation='h',
+        title='Количество пользователей по странам'
     )
     
-    st.plotly_chart(fig_map, use_container_width=True)
-    
-    # Статистика по странам
-    st.markdown("---")
-    st.header("📊 Топ стран")
-    
-    col1, col2 = st.columns([2, 1])
-    
-    with col1:
-        df_countries = pd.DataFrame([
-            {'Страна': COUNTRY_NAMES.get(code, code), 'Пользователей': count}
-            for code, count in country_counts.most_common()
-        ])
-        
-        fig_bar = px.bar(
-            df_countries,
-            x='Пользователей',
-            y='Страна',
-            orientation='h',
-            title='Количество пользователей по странам'
-        )
-        
-        fig_bar.update_layout(height=400, yaxis={'categoryorder': 'total ascending'})
-        st.plotly_chart(fig_bar, use_container_width=True)
-    
-    with col2:
-        st.subheader("🌐 Список")
-        for country, count in country_counts.most_common():
-            country_name = COUNTRY_NAMES.get(country, country)
-            percentage = (count / len(results)) * 100
-            st.write(f"**{country_name}**: {count} ({percentage:.1f}%)")
+    fig_bar.update_layout(height=400, yaxis={'categoryorder': 'total ascending'})
+    st.plotly_chart(fig_bar, use_container_width=True)
 
-# -------------------------
-# PAGE 4: Libraries
-# -------------------------
+with col2:
+    st.subheader("🌐 Список")
+    for country, count in country_counts.most_common():
+        country_name = COUNTRY_NAMES.get(country, country)
+        percentage = (count / len(results)) * 100
+        st.write(f"**{country_name}**: {count} ({percentage:.1f}%)")
+#Libraries
 
 def render_libraries_page():
     st.title("📚 Библиотеки игр")
-    
     if not st.session_state.parsed_results:
         st.warning("⚠️ Сначала выполните парсинг")
         return
+
+results = [r for r in st.session_state.parsed_results if "error" not in r]
+
+# Размер библиотек
+library_data = []
+for profile in results:
+    games = profile.get('games', [])
+    total_hours = 0
     
-    results = [r for r in st.session_state.parsed_results if "error" not in r]
+    for game in games:
+        playtime = game.get('playtime', 0)
+        if isinstance(playtime, str):
+            try:
+                playtime = float(playtime) * 60
+            except:
+                playtime = 0
+        total_hours += playtime
     
-    # Размер библиотек
-    library_data = []
-    for profile in results:
-        games = profile.get('games', [])
-        total_hours = 0
+    library_data.append({
+        'nickname': profile['nickname'],
+        'games_count': len(games),
+        'total_hours': round(total_hours / 60, 1),
+        'games': games
+    })
+
+library_data.sort(key=lambda x: x['games_count'], reverse=True)
+df_lib = pd.DataFrame(library_data)
+
+st.header("🎮 Размер библиотек")
+
+col1, col2 = st.columns(2)
+
+with col1:
+    fig_games = go.Figure(data=[
+        go.Bar(
+            x=df_lib['nickname'],
+            y=df_lib['games_count'],
+            text=df_lib['games_count'],
+            textposition='auto',
+            marker=dict(color='#1f77b4')
+        )
+    ])
+    
+    fig_games.update_layout(
+        title="Количество игр",
+        xaxis_title="Игрок",
+        yaxis_title="Игр",
+        height=400
+    )
+    
+    st.plotly_chart(fig_games, use_container_width=True)
+
+with col2:
+    fig_hours = go.Figure(data=[
+        go.Bar(
+            x=df_lib['nickname'],
+            y=df_lib['total_hours'],
+            text=df_lib['total_hours'],
+            textposition='auto',
+            marker=dict(color='#ff7f0e')
+        )
+    ])
+    
+    fig_hours.update_layout(
+        title="Общее время в играх",
+        xaxis_title="Игрок",
+        yaxis_title="Часы",
+        height=400
+    )
+    
+    st.plotly_chart(fig_hours, use_container_width=True)
+
+# Реальная стоимость библиотек
+st.markdown("---")
+st.header("💰 Реальная стоимость библиотек")
+
+calculate_real_price = st.checkbox(
+    "🔍 Рассчитать реальную стоимость из Steam Store",
+    help="⚠️ Это может занять несколько минут"
+)
+
+if calculate_real_price:
+    st.warning("⏳ Идет расчет реальной стоимости... Это может занять время")
+    
+    progress_bar = st.progress(0)
+    value_data = []
+    
+    for idx, row in df_lib.iterrows():
+        nickname = row['nickname']
+        games = row['games']
         
-        for game in games:
-            playtime = game.get('playtime', 0)
-            if isinstance(playtime, str):
-                try:
-                    playtime = float(playtime) * 60
-                except:
-                    playtime = 0
-            total_hours += playtime
+        st.info(f"Обрабатываю: {nickname} ({len(games)} игр)")
+        real_value = calculate_library_value(games)
         
-        library_data.append({
-            'nickname': profile['nickname'],
-            'games_count': len(games),
-            'total_hours': round(total_hours / 60, 1)
+        value_data.append({
+            'nickname': nickname,
+            'value': real_value,
+            'games_count': len(games)
         })
-    
-    library_data.sort(key=lambda x: x['games_count'], reverse=True)
-    df_lib = pd.DataFrame(library_data)
-    
-    st.header("🎮 Размер библиотек")
-    
-    col1, col2 = st.columns(2)
-    
-    with col1:
-        fig_games = go.Figure(data=[
-            go.Bar(
-                x=df_lib['nickname'],
-                y=df_lib['games_count'],
-                text=df_lib['games_count'],
-                textposition='auto',
-                marker=dict(color='#1f77b4')
-            )
-        ])
         
-        fig_games.update_layout(
-            title="Количество игр",
-            xaxis_title="Игрок",
-            yaxis_title="Игр",
-            height=400
-        )
-        
-        st.plotly_chart(fig_games, use_container_width=True)
+        progress_bar.progress((idx + 1) / len(df_lib))
     
-    with col2:
-        fig_hours = go.Figure(data=[
-            go.Bar(
-                x=df_lib['nickname'],
-                y=df_lib['total_hours'],
-                text=df_lib['total_hours'],
-                textposition='auto',
-                marker=dict(color='#ff7f0e')
-            )
-        ])
-        
-        fig_hours.update_layout(
-            title="Общее время в играх",
-            xaxis_title="Игрок",
-            yaxis_title="Часы",
-            height=400
-        )
-        
-        st.plotly_chart(fig_hours, use_container_width=True)
-    
-    # Примерная стоимость
-    st.markdown("---")
-    st.header("💰 Примерная стоимость библиотек")
-    st.info("💡 Средняя цена игры принята за $15")
-    
-    df_lib['estimated_value'] = df_lib['games_count'] * 15
+    df_value = pd.DataFrame(value_data)
     
     fig_value = go.Figure(data=[
         go.Bar(
-            x=df_lib['nickname'],
-            y=df_lib['estimated_value'],
-            text=['$' + str(val) for val in df_lib['estimated_value']],
+            x=df_value['nickname'],
+            y=df_value['value'],
+            text=[f"${val:.2f}" for val in df_value['value']],
             textposition='auto',
             marker=dict(
-                color=df_lib['estimated_value'],
+                color=df_value['value'],
                 colorscale='Greens'
             )
         )
     ])
     
     fig_value.update_layout(
-        title="Примерная стоимость библиотек",
+        title="Реальная стоимость библиотек (Steam Store)",
         xaxis_title="Игрок",
         yaxis_title="Стоимость ($)",
         height=400
@@ -738,202 +829,229 @@ def render_libraries_page():
     
     st.plotly_chart(fig_value, use_container_width=True)
     
-    # Топ владельцев
     col1, col2, col3 = st.columns(3)
     
     top_games = df_lib.iloc[0]
     top_hours = df_lib.nlargest(1, 'total_hours').iloc[0]
-    top_value = df_lib.nlargest(1, 'estimated_value').iloc[0]
+    top_value = df_value.nlargest(1, 'value').iloc[0]
     
     with col1:
         st.metric("🏆 Больше всего игр", top_games['nickname'], f"{top_games['games_count']} игр")
     with col2:
         st.metric("⏱️ Больше всего часов", top_hours['nickname'], f"{top_hours['total_hours']} ч")
     with col3:
-        st.metric("💎 Самая дорогая", top_value['nickname'], f"${top_value['estimated_value']}")
-
-# -------------------------
-# PAGE 5: Games
-# -------------------------
+        st.metric("💎 Самая дорогая", top_value['nickname'], f"${top_value['value']}")
+else:
+    st.info("💡 Включите опцию выше для расчета реальной стоимости")
 
 def render_games_page():
     st.title("🎮 Анализ игр")
-    
     if not st.session_state.parsed_results:
         st.warning("⚠️ Сначала выполните парсинг")
         return
-    
     results = [r for r in st.session_state.parsed_results if "error" not in r]
-    
-    # Собираем все игры
-    all_games = {}
-    for profile in results:
-        for game in profile.get('games', []):
-            game_name = game.get('name', 'Unknown')
-            playtime = game.get('playtime', 0)
-            
-            if isinstance(playtime, str):
-                try:
-                    playtime = float(playtime) * 60
-                except:
-                    playtime = 0
-            
-            if game_name in all_games:
-                all_games[game_name]['total_time'] += playtime
-                all_games[game_name]['players'] += 1
-            else:
-                all_games[game_name] = {'total_time': playtime, 'players': 1}
-    
-    # Топ игр по времени
-    st.header("⏱️ Топ-10 игр по времени")
-    
-    top_time = sorted(all_games.items(), key=lambda x: x[1]['total_time'], reverse=True)[:10]
-    df_time = pd.DataFrame([
-        {
-            'game': game,
-            'hours': round(data['total_time'] / 60, 1),
-            'players': data['players']
-        }
-        for game, data in top_time
-    ])
-    
-    fig_time = go.Figure(data=[
-        go.Bar(
-            y=df_time['game'],
-            x=df_time['hours'],
-            orientation='h',
-            text=df_time['hours'],
-            textposition='auto',
-            marker=dict(color='#2ecc71'),
-            customdata=df_time['players'],
-            hovertemplate='<b>%{y}</b><br>Время: %{x} ч<br>Игроков: %{customdata}<extra></extra>'
-        )
-    ])
-    
-    fig_time.update_layout(
-        xaxis_title="Часы",
-        yaxis_title="Игра",
-        height=500,
-        yaxis={'categoryorder': 'total ascending'}
-    )
-    
-    st.plotly_chart(fig_time, use_container_width=True)
-    
-    # Топ популярных игр
-    st.markdown("---")
-    st.header("👥 Топ-10 популярных игр")
-    st.caption("Игры, в которые играет больше всего человек")
-    
-    top_popular = sorted(all_games.items(), key=lambda x: x[1]['players'], reverse=True)[:10]
-    df_popular = pd.DataFrame([
-        {
-            'game': game,
-            'players': data['players'],
-            'percentage': round((data['players'] / len(results)) * 100, 1)
-        }
-        for game, data in top_popular
-    ])
-    
-    fig_popular = go.Figure(data=[
-        go.Bar(
-            y=df_popular['game'],
-            x=df_popular['players'],
-            orientation='h',
-            text=[f"{p} ({pct}%)" for p, pct in zip(df_popular['players'], df_popular['percentage'])],
-            textposition='auto',
-            marker=dict(color='#e74c3c')
-        )
-    ])
-    
-    fig_popular.update_layout(
-        xaxis_title="Игроков",
-        yaxis_title="Игра",
-        height=500,
-        yaxis={'categoryorder': 'total ascending'}
-    )
-    
-    st.plotly_chart(fig_popular, use_container_width=True)
-    
-    # Активность пользователей
-    st.markdown("---")
-    st.header("📈 Активность пользователей")
-    
-    activity_data = []
-    for profile in results:
-        last_logoff = profile.get('last_logoff')
-        if last_logoff:
-            days_ago = (datetime.now().timestamp() - last_logoff) / 86400
-            activity_data.append({
-                'nickname': profile['nickname'],
-                'days_ago': round(days_ago, 1),
-                'status': 'Активен' if days_ago < 7 else 'Неактивен' if days_ago > 30 else 'Умеренно активен'
-            })
-    
-    if activity_data:
-        df_activity = pd.DataFrame(activity_data)
-        df_activity = df_activity.sort_values('days_ago')
-        
-        col1, col2 = st.columns([2, 1])
-        
-        with col1:
-            fig_activity = go.Figure(data=[
-                go.Bar(
-                    y=df_activity['nickname'],
-                    x=df_activity['days_ago'],
-                    orientation='h',
-                    text=df_activity['days_ago'],
-                    textposition='auto',
-                    marker=dict(
-                        color=df_activity['days_ago'],
-                        colorscale='RdYlGn',
-                        reversescale=True
-                    )
-                )
-            ])
-            
-            fig_activity.update_layout(
-                title="Дней с последней активности",
-                xaxis_title="Дней",
-                yaxis_title="Игрок",
-                height=400,
-                yaxis={'categoryorder': 'total ascending'}
-            )
-            
-            st.plotly_chart(fig_activity, use_container_width=True)
-        
-        with col2:
-            st.subheader("📊 Статус")
-            status_counts = df_activity['status'].value_counts()
-            
-            for status, count in status_counts.items():
-                if status == 'Активен':
-                    st.success(f"✅ {status}: {count}")
-                elif status == 'Неактивен':
-                    st.error(f"❌ {status}: {count}")
-                else:
-                    st.warning(f"⚠️ {status}: {count}")
-    else:
-        st.info("ℹ️ Нет данных об активности")
 
+# Собираем все игры
+all_games = {}
+for profile in results:
+    for game in profile.get('games', []):
+        game_name = game.get('name', 'Unknown')
+        playtime = game.get('playtime', 0)
+        
+        if isinstance(playtime, str):
+            try:
+                playtime = float(playtime) * 60
+            except:
+                playtime = 0
+        
+        if game_name in all_games:
+            all_games[game_name]['total_time'] += playtime
+            all_games[game_name]['players'] += 1
+        else:
+            all_games[game_name] = {'total_time': playtime, 'players': 1}
+
+# Топ игр по времени
+st.header("⏱️ Топ-10 игр по времени")
+
+top_time = sorted(all_games.items(), key=lambda x: x[1]['total_time'], reverse=True)[:10]
+df_time = pd.DataFrame([
+    {
+        'game': game,
+        'hours': round(data['total_time'] / 60, 1),
+        'players': data['players']
+    }
+    for game, data in top_time
+])
+
+fig_time = go.Figure(data=[
+    go.Bar(
+        y=df_time['game'],
+        x=df_time['hours'],
+        orientation='h',
+        text=df_time['hours'],
+        textposition='auto',
+        marker=dict(color='#2ecc71'),
+        customdata=df_time['players'],
+        hovertemplate='<b>%{y}</b><br>Время: %{x} ч<br>Игроков: %{customdata}<extra></extra>'
+    )
+])
+
+fig_time.update_layout(
+    xaxis_title="Часы",
+    yaxis_title="Игра",
+    height=500,
+    yaxis={'categoryorder': 'total ascending'}
+)
+
+st.plotly_chart(fig_time, use_container_width=True)
+
+# Топ популярных игр
+st.markdown("---")
+st.header("👥 Топ-10 популярных игр")
+st.caption("Игры, в которые играет больше всего человек")
+
+top_popular = sorted(all_games.items(), key=lambda x: x[1]['players'], reverse=True)[:10]
+df_popular = pd.DataFrame([
+    {
+        'game': game,
+        'players': data['players'],
+        'percentage': round((data['players'] / len(results)) * 100, 1)
+    }
+    for game, data in top_popular
+])
+
+fig_popular = go.Figure(data=[
+    go.Bar(
+        y=df_popular['game'],
+        x=df_popular['players'],
+        orientation='h',
+        text=[f"{p} ({pct}%)" for p, pct in zip(df_popular['players'], df_popular['percentage'])],
+        textposition='auto',
+        marker=dict(color='#e74c3c')
+    )
+])
+
+fig_popular.update_layout(
+    xaxis_title="Игроков",
+    yaxis_title="Игра",
+    height=500,
+    yaxis={'categoryorder': 'total ascending'}
+)
+
+st.plotly_chart(fig_popular, use_container_width=True)
+
+# Активность пользователей (последние 2 недели)
+st.markdown("---")
+st.header("📈 Активность за последние 2 недели")
+st.caption("Сколько часов игроки наиграли за последние 14 дней")
+
+activity_data = []
+for profile in results:
+    nickname = profile['nickname']
+    hours_2weeks = 0
+    
+    for game in profile.get('games', []):
+        playtime_2w = game.get('playtime_2weeks', 0)
+        hours_2weeks += playtime_2w
+    
+    activity_data.append({
+        'nickname': nickname,
+        'hours_2weeks': round(hours_2weeks / 60, 1) if hours_2weeks > 0 else 0,
+        'status': 'Очень активен' if hours_2weeks > 1200 else 'Активен' if hours_2weeks > 300 else 'Малоактивен' if hours_2weeks > 0 else 'Неактивен'
+    })
+
+if activity_data:
+    df_activity = pd.DataFrame(activity_data)
+    df_activity = df_activity.sort_values('hours_2weeks', ascending=False)
+    
+    col1, col2 = st.columns([2, 1])
+    
+    with col1:
+        colors = []
+        for hours in df_activity['hours_2weeks']:
+            if hours > 20:
+                colors.append('#27ae60')
+            elif hours > 5:
+                colors.append('#f39c12')
+            elif hours > 0:
+                colors.append('#e67e22')
+            else:
+                colors.append('#e74c3c')
+        
+        fig_activity = go.Figure(data=[
+            go.Bar(
+                y=df_activity['nickname'],
+                x=df_activity['hours_2weeks'],
+                orientation='h',
+                text=df_activity['hours_2weeks'],
+                textposition='auto',
+                marker=dict(color=colors)
+            )
+        ])
+        
+        fig_activity.update_layout(
+            title="Часов в играх за последние 2 недели",
+            xaxis_title="Часы",
+            yaxis_title="Игрок",
+            height=400,
+            yaxis={'categoryorder': 'total ascending'}
+        )
+        
+        st.plotly_chart(fig_activity, use_container_width=True)
+    
+    with col2:
+        st.subheader("📊 Статус")
+        status_counts = df_activity['status'].value_counts()
+        
+        for status in ['Очень активен', 'Активен', 'Малоактивен', 'Неактивен']:
+            count = status_counts.get(status, 0)
+            if status == 'Очень активен':
+                st.success(f"🔥 {status}: {count}")
+            elif status == 'Активен':
+                st.info(f"✅ {status}: {count}")
+            elif status == 'Малоактивен':
+                st.warning(f"⚠️ {status}: {count}")
+            else:
+                st.error(f"❌ {status}: {count}")
+        
+        st.markdown("---")
+        st.subheader("🏅 Самый активный")
+        if df_activity['hours_2weeks'].max() > 0:
+            top_player = df_activity.iloc[0]
+            st.success(f"**{top_player['nickname']}**")
+            st.metric("Часов за 2 недели", f"{top_player['hours_2weeks']}")
+        else:
+            st.info("Нет активных игроков")
+else:
+    st.info("ℹ️ Нет данных об активности")
 # -------------------------
 # Router
 # -------------------------
-
 if st.session_state.current_page == "parser":
     render_parser_page()
+
 elif st.session_state.current_page == "overview":
     render_overview_page()
+
 elif st.session_state.current_page == "geography":
     render_geography_page()
+
 elif st.session_state.current_page == "libraries":
     render_libraries_page()
+
 elif st.session_state.current_page == "games":
     render_games_page()
 
+
+# -------------------------
 # Footer
+# -------------------------
 st.markdown("---")
-st.markdown("""
-<div style='text-align: center; color: #666;'>
-    <p>Made with ❤️ using Streamlit | Steam Web API</p>
-</div>
-""", unsafe_allow_html=True)
+st.markdown(
+    """
+    <div style="text-align: center; color: #666;">
+        <p>Made with ❤️ using Streamlit | Steam Web API</p>
+    </div>
+    """,
+    unsafe_allow_html=True
+)
