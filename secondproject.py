@@ -1,7 +1,7 @@
 """
 Steam Profile Parser - Streamlit Web App with Multi-page Analytics
 ==================================================================
-Веб-интерфейс для парсинга Steam профилей с многостраничной аналитикой
+Веб-интерфейс для парсинга Steam профилей с многостраничной аналитики
 
 Установка:
   pip install streamlit requests beautifulsoup4 openpyxl pandas plotly
@@ -62,6 +62,8 @@ if 'parsed_results' not in st.session_state:
     st.session_state.parsed_results = None
 if 'current_page' not in st.session_state:
     st.session_state.current_page = "parser"
+if 'excel_data' not in st.session_state:
+    st.session_state.excel_data = None
 
 # Словарь стран для карты
 COUNTRY_NAMES = {
@@ -143,6 +145,115 @@ if not st.session_state.api_key_confirmed:
 API_KEY = st.session_state.api_key
 
 # -------------------------
+# Функции для работы с данными
+# -------------------------
+
+def create_excel(results):
+    """Создает Excel файл с данными профилей и играми"""
+    output = io.BytesIO()
+    
+    # Лист с профилями
+    profiles_data = []
+    for r in results:
+        if "error" in r:
+            profiles_data.append({
+                "SteamID": r["steamid"], 
+                "Статус": r["error"], 
+                "Никнейм": "-",
+                "Страна": "-", 
+                "Уровень": "-", 
+                "Кол-во игр": 0,
+                "Кол-во друзей": 0, 
+                "Кол-во групп": 0, 
+                "URL": r.get("profile_url", "-"),
+                "Часы за 2 недели": 0,
+                "Дата регистрации": "-",
+                "Последний онлайн": "-"
+            })
+        else:
+            # Преобразуем timestamp в дату
+            timecreated = "-"
+            if r.get("timecreated"):
+                try:
+                    timecreated = datetime.fromtimestamp(r["timecreated"]).strftime("%Y-%m-%d")
+                except:
+                    timecreated = "-"
+            
+            last_logoff = "-"
+            if r.get("last_logoff"):
+                try:
+                    last_logoff = datetime.fromtimestamp(r["last_logoff"]).strftime("%Y-%m-%d %H:%M")
+                except:
+                    last_logoff = "-"
+            
+            profiles_data.append({
+                "SteamID": r["steamid"], 
+                "Статус": "OK", 
+                "Никнейм": r["nickname"],
+                "Страна": r.get("country", "-"), 
+                "Уровень": r.get("level", 0),
+                "Кол-во игр": len(r.get("games", [])), 
+                "Кол-во друзей": len(r.get("friends", [])),
+                "Кол-во групп": len(r.get("groups", [])), 
+                "URL": r["profile_url"],
+                "Часы за 2 недели": r.get("recent_playtime", 0),
+                "Дата регистрации": timecreated,
+                "Последний онлайн": last_logoff
+            })
+    
+    df_profiles = pd.DataFrame(profiles_data)
+    
+    # Лист с играми
+    games_data = []
+    for r in results:
+        if "error" not in r:
+            for game in r.get("games", []):
+                playtime = game.get("playtime", 0)
+                if isinstance(playtime, str):
+                    try:
+                        playtime = float(playtime) * 60
+                    except:
+                        playtime = 0
+                games_data.append({
+                    "Никнейм": r["nickname"], 
+                    "SteamID": r["steamid"],
+                    "Игра": game.get("name", "Unknown"), 
+                    "AppID": game.get("appid", 0),
+                    "Время (минуты)": int(playtime), 
+                    "Время (часы)": round(playtime / 60, 1)
+                })
+    
+    df_games = pd.DataFrame(games_data)
+    
+    # Лист с недавней активностью
+    recent_data = []
+    for r in results:
+        if "error" not in r:
+            for game in r.get("recent_games", []):
+                recent_data.append({
+                    "Никнейм": r["nickname"],
+                    "SteamID": r["steamid"],
+                    "Игра": game.get("name", "Unknown"),
+                    "Часы за 2 недели": round(game.get("playtime_2weeks", 0) / 60, 1),
+                    "Всего часов": round(game.get("playtime_total", 0) / 60, 1)
+                })
+    
+    df_recent = pd.DataFrame(recent_data)
+    
+    # Создаем Excel файл
+    with pd.ExcelWriter(output, engine='openpyxl') as writer:
+        df_profiles.to_excel(writer, sheet_name='Profiles', index=False)
+        
+        if not df_games.empty:
+            df_games.to_excel(writer, sheet_name='All Games', index=False)
+        
+        if not df_recent.empty:
+            df_recent.to_excel(writer, sheet_name='Recent Activity', index=False)
+    
+    output.seek(0)
+    return output
+
+# -------------------------
 # Sidebar - Навигация
 # -------------------------
 
@@ -179,9 +290,29 @@ for page_id, page_info in pages.items():
             st.session_state.current_page = page_id
             st.rerun()
 
+# Отображение статистики и кнопки скачивания Excel
 if st.session_state.parsed_results:
     success_count = len([r for r in st.session_state.parsed_results if "error" not in r])
     st.sidebar.success(f"✅ Профилей: {success_count}")
+    
+    # Кнопка скачивания Excel - появляется только на страницах аналитики
+    if st.session_state.current_page in ["overview", "geography", "libraries", "games"]:
+        st.sidebar.markdown("---")
+        st.sidebar.subheader("📁 Экспорт данных")
+        
+        # Создаем Excel файл при первом переходе на страницу аналитики
+        if st.session_state.excel_data is None:
+            excel_file = create_excel(st.session_state.parsed_results)
+            st.session_state.excel_data = excel_file.getvalue()
+        
+        timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
+        st.sidebar.download_button(
+            label="📥 Скачать Excel",
+            data=st.session_state.excel_data,
+            file_name=f"steam_analytics_{timestamp}.xlsx",
+            mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+            use_container_width=True
+        )
 
 st.sidebar.markdown("---")
 
@@ -355,34 +486,44 @@ def get_game_prices(appids):
     """Получить цены игр из Steam Store"""
     prices = {}
     
-    # Разбиваем на группы по 50 appids для запроса
-    for i in range(0, len(appids), 50):
-        appids_chunk = appids[i:i+50]
+    # Разбиваем на группы по 20 appids для запроса (Steam ограничивает)
+    for i in range(0, len(appids), 20):
+        appids_chunk = appids[i:i+20]
         
         try:
             # Используем Steam Store API
             url = "https://store.steampowered.com/api/appdetails"
-            params = {
-                "appids": ",".join(map(str, appids_chunk)),
-                "filters": "price_overview"
-            }
             
-            r = requests.get(url, headers=HEADERS, timeout=10)
-            data = r.json()
-            
-            for appid_str, game_data in data.items():
-                if game_data and game_data.get("success"):
-                    price_data = game_data.get("data", {}).get("price_overview")
-                    if price_data:
-                        appid = int(appid_str)
-                        # Цена в долларах (делим на 100)
-                        price_usd = price_data.get("final", 0) / 100
-                        prices[appid] = price_usd
-            
-            time.sleep(1)  # Задержка между запросами
+            for appid in appids_chunk:
+                params = {
+                    "appids": appid,
+                    "cc": "us",  # США для долларов
+                    "l": "english"
+                }
+                
+                r = requests.get(url, params=params, headers=HEADERS, timeout=10)
+                data = r.json()
+                
+                if data and isinstance(data, dict):
+                    appid_str = str(appid)
+                    if appid_str in data:
+                        game_data = data[appid_str]
+                        if game_data and game_data.get("success"):
+                            price_data = game_data.get("data", {}).get("price_overview")
+                            if price_data:
+                                # Цена в долларах (делим на 100)
+                                price_usd = price_data.get("final", 0) / 100
+                                prices[appid] = price_usd
+                            else:
+                                # Если нет цены, возможно игра бесплатна или удалена
+                                prices[appid] = 0.0
+                        else:
+                            prices[appid] = 0.0
+                
+                time.sleep(0.5)  # Задержка между запросами для избежания блокировки
             
         except Exception as e:
-            st.warning(f"⚠️ Ошибка при получении цен: {str(e)}")
+            print(f"Ошибка при получении цены для appid {appid}: {str(e)}")
             continue
     
     return prices
@@ -416,54 +557,6 @@ def collect_profile(profile_url):
         "recent_games": recent_data.get("recent_games", [])
     }
 
-def create_excel(results):
-    output = io.BytesIO()
-    profiles_data = []
-    for r in results:
-        if "error" in r:
-            profiles_data.append({
-                "SteamID": r["steamid"], "Статус": r["error"], "Никнейм": "-",
-                "Страна": "-", "Уровень": "-", "Кол-во игр": 0,
-                "Кол-во друзей": 0, "Кол-во групп": 0, "URL": r.get("profile_url", "-"),
-                "Часы за 2 недели": 0
-            })
-        else:
-            profiles_data.append({
-                "SteamID": r["steamid"], "Статус": "OK", "Никнейм": r["nickname"],
-                "Страна": r.get("country", "-"), "Уровень": r.get("level", 0),
-                "Кол-во игр": len(r.get("games", [])), "Кол-во друзей": len(r.get("friends", [])),
-                "Кол-во групп": len(r.get("groups", [])), "URL": r["profile_url"],
-                "Часы за 2 недели": r.get("recent_playtime", 0)
-            })
-    
-    df_profiles = pd.DataFrame(profiles_data)
-    
-    games_data = []
-    for r in results:
-        if "error" not in r:
-            for game in r.get("games", []):
-                playtime = game.get("playtime", 0)
-                if isinstance(playtime, str):
-                    try:
-                        playtime = float(playtime) * 60
-                    except:
-                        playtime = 0
-                games_data.append({
-                    "Никнейм": r["nickname"], "SteamID": r["steamid"],
-                    "Игра": game["name"], "AppID": game["appid"],
-                    "Время (минуты)": int(playtime), "Время (часы)": round(playtime / 60, 1)
-                })
-    
-    df_games = pd.DataFrame(games_data)
-    
-    with pd.ExcelWriter(output, engine='openpyxl') as writer:
-        df_profiles.to_excel(writer, sheet_name='Profiles', index=False)
-        if not df_games.empty:
-            df_games.to_excel(writer, sheet_name='Games', index=False)
-    
-    output.seek(0)
-    return output
-
 # -------------------------
 # PAGE 1: Parser
 # -------------------------
@@ -488,6 +581,7 @@ def render_parser_page():
     with col2:
         if st.button("🗑️ Очистить", use_container_width=True):
             st.session_state.parsed_results = None
+            st.session_state.excel_data = None
             st.rerun()
     
     if start_button and profile_input:
@@ -527,12 +621,14 @@ def render_parser_page():
             
             status_text.text("✅ Парсинг завершён!")
             st.session_state.parsed_results = results
+            st.session_state.excel_data = None  # Сбрасываем данные Excel
             
             st.markdown("---")
             
             col1, col2 = st.columns(2)
             
             with col1:
+                # Создаем Excel файл для скачивания прямо на странице парсера
                 excel_file = create_excel(results)
                 timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
                 st.download_button(
@@ -808,16 +904,15 @@ def render_libraries_page():
     
     results = [r for r in st.session_state.parsed_results if "error" not in r]
     
-    # Собираем все appid для получения цен
-    st.info("🔄 Получение цен игр из Steam Store...")
-    
-    all_appids = set()
-    for profile in results:
-        for game in profile.get('games', []):
-            all_appids.add(game['appid'])
-    
-    # Получаем цены игр
-    game_prices = get_game_prices(list(all_appids))
+    with st.spinner("🔄 Получение цен игр из Steam Store..."):
+        # Собираем все appid для получения цен
+        all_appids = set()
+        for profile in results:
+            for game in profile.get('games', []):
+                all_appids.add(game['appid'])
+        
+        # Получаем цены игр
+        game_prices = get_game_prices(list(all_appids))
     
     # Размер библиотек и точная стоимость
     library_data = []
@@ -898,74 +993,113 @@ def render_libraries_page():
     st.markdown("---")
     st.header("💰 Точная стоимость библиотек")
     
-    fig_value = go.Figure(data=[
-        go.Bar(
-            x=df_lib['nickname'],
-            y=df_lib['exact_value'],
-            text=['$' + str(val) for val in df_lib['exact_value']],
-            textposition='auto',
-            marker=dict(
-                color=df_lib['exact_value'],
-                colorscale='Greens'
-            ),
-            hovertemplate='<b>%{x}</b><br>Стоимость: $%{y:.2f}<extra></extra>'
+    # Проверяем, удалось ли получить цены
+    successful_prices = sum(1 for price in game_prices.values() if price > 0)
+    
+    if successful_prices > 0:
+        fig_value = go.Figure(data=[
+            go.Bar(
+                x=df_lib['nickname'],
+                y=df_lib['exact_value'],
+                text=['$' + str(val) for val in df_lib['exact_value']],
+                textposition='auto',
+                marker=dict(
+                    color=df_lib['exact_value'],
+                    colorscale='Greens'
+                ),
+                hovertemplate='<b>%{x}</b><br>Стоимость: $%{y:.2f}<extra></extra>'
+            )
+        ])
+        
+        fig_value.update_layout(
+            title=f"Точная стоимость библиотек (данные Steam Store, получено {successful_prices} цен)",
+            xaxis_title="Игрок",
+            yaxis_title="Стоимость ($)",
+            height=400
         )
-    ])
-    
-    fig_value.update_layout(
-        title="Точная стоимость библиотек (данные Steam Store)",
-        xaxis_title="Игрок",
-        yaxis_title="Стоимость ($)",
-        height=400
-    )
-    
-    st.plotly_chart(fig_value, use_container_width=True)
-    
-    # Статистика по ценам
-    total_value_all = df_lib['exact_value'].sum()
-    avg_value = df_lib['exact_value'].mean()
-    
-    col1, col2, col3 = st.columns(3)
-    
-    with col1:
-        st.metric("💰 Общая стоимость", f"${total_value_all:,.2f}")
-    with col2:
-        st.metric("💵 Средняя стоимость", f"${avg_value:,.2f}")
-    with col3:
-        st.metric("🏆 Самый дорогой аккаунт", 
-                 df_lib.loc[df_lib['exact_value'].idxmax(), 'nickname'],
-                 f"${df_lib['exact_value'].max():,.2f}")
-    
-    # Топ-10 самых дорогих библиотек
-    st.markdown("---")
-    st.header("🏆 Топ-10 самых дорогих библиотек")
-    
-    df_top10 = df_lib.nlargest(10, 'exact_value')
-    
-    fig_top10 = px.bar(
-        df_top10,
-        x='exact_value',
-        y='nickname',
-        orientation='h',
-        text='exact_value',
-        color='exact_value',
-        color_continuous_scale='Viridis',
-        title='Топ-10 самых дорогих библиотек игр'
-    )
-    
-    fig_top10.update_layout(
-        xaxis_title="Стоимость ($)",
-        yaxis_title="Игрок",
-        height=400,
-        yaxis={'categoryorder': 'total ascending'}
-    )
-    
-    fig_top10.update_traces(
-        texttemplate='$%{text:.2f}',
-        textposition='outside'
-    )
-    
-    st.plotly_chart(fig_top10, use_container_width=True)
+        
+        st.plotly_chart(fig_value, use_container_width=True)
+        
+        # Статистика по ценам
+        total_value_all = df_lib['exact_value'].sum()
+        avg_value = df_lib['exact_value'].mean()
+        
+        col1, col2, col3 = st.columns(3)
+        
+        with col1:
+            st.metric("💰 Общая стоимость", f"${total_value_all:,.2f}")
+        with col2:
+            st.metric("💵 Средняя стоимость", f"${avg_value:,.2f}")
+        with col3:
+            st.metric("🏆 Самый дорогой аккаунт", 
+                     df_lib.loc[df_lib['exact_value'].idxmax(), 'nickname'],
+                     f"${df_lib['exact_value'].max():,.2f}")
+        
+        # Топ-10 самых дорогих библиотек
+        st.markdown("---")
+        st.header("🏆 Топ-10 самых дорогих библиотек")
+        
+        df_top10 = df_lib.nlargest(10, 'exact_value')
+        
+        fig_top10 = px.bar(
+            df_top10,
+            x='exact_value',
+            y='nickname',
+            orientation='h',
+            text='exact_value',
+            color='exact_value',
+            color_continuous_scale='Viridis',
+            title='Топ-10 самых дорогих библиотек игр'
+        )
+        
+        fig_top10.update_layout(
+            xaxis_title="Стоимость ($)",
+            yaxis_title="Игрок",
+            height=400,
+            yaxis={'categoryorder': 'total ascending'}
+        )
+        
+        fig_top10.update_traces(
+            texttemplate='$%{text:.2f}',
+            textposition='outside'
+        )
+        
+        st.plotly_chart(fig_top10, use_container_width=True)
+    else:
+        st.warning("⚠️ Не удалось получить цены игр из Steam Store")
+        st.info("ℹ️ Возможные причины:")
+        st.info("1. Ограничения Steam API на количество запросов")
+        st.info("2. Временные проблемы с сервером Steam")
+        st.info("3. Некоторые игры могут быть бесплатными или удаленными")
+        
+        # Показываем приблизительную стоимость
+        st.markdown("---")
+        st.header("💰 Приблизительная стоимость библиотек")
+        st.info("💡 Средняя цена игры принята за $15")
+        
+        df_lib['estimated_value'] = df_lib['games_count'] * 15
+        
+        fig_value = go.Figure(data=[
+            go.Bar(
+                x=df_lib['nickname'],
+                y=df_lib['estimated_value'],
+                text=['$' + str(val) for val in df_lib['estimated_value']],
+                textposition='auto',
+                marker=dict(
+                    color=df_lib['estimated_value'],
+                    colorscale='Greens'
+                )
+            )
+        ])
+        
+        fig_value.update_layout(
+            title="Примерная стоимость библиотек",
+            xaxis_title="Игрок",
+            yaxis_title="Стоимость ($)",
+            height=400
+        )
+        
+        st.plotly_chart(fig_value, use_container_width=True)
 
 # -------------------------
 # PAGE 5: Games
@@ -1053,15 +1187,17 @@ def render_games_page():
         df_top_active = df_recent.nlargest(5, 'hours_2weeks')
         
         for i, (_, row) in enumerate(df_top_active.iterrows()):
+            nickname = row ['nickname']
+            hours = row ['hours_2weeks']
+
             if i == 0:
-                st.success(f"🥇 **{row['nickname']}**<br>{row['hours_2weeks']} ч")
+                st.success(f"🥇 **{nickname}**  \n{hours} ч")
             elif i == 1:
-                st.info(f"🥈 **{row['nickname']}**<br>{row['hours_2weeks']} ч")
+                st.info(f"🥈 **{nickname}**  \n{hours} ч")
             elif i == 2:
-                st.warning(f"🥉 **{row['nickname']}**<br>{row['hours_2weeks']} ч")
+                st.warning(f"🥉 **{nickname}**  \n{hours} ч")
             else:
-                st.write(f"**{row['nickname']}**: {row['hours_2weeks']} ч")
-        
+                st.write(f"**{nickname}**: {hours} ч")
         # Статистика по активности
         st.markdown("---")
         st.subheader("📊 Статистика")
