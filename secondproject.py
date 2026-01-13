@@ -793,7 +793,7 @@ def render_libraries_page():
             go.Bar(
                 x=df_value['nickname'],
                 y=df_value['value'],
-                text=['
+                text=[''],
 
 # -------------------------
 # PAGE 5: Games
