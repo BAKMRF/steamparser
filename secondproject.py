@@ -1,13 +1,17 @@
 """
 Steam Profile Parser - Streamlit Web App with Multi-page Analytics
 ==================================================================
-Веб-интерфейс для парсинга Steam профилей с многостраничной аналитики
+Веб-интерфейс для парсинга Steam профилей с многостраничной аналитикой
 
 Установка:
   pip install streamlit requests beautifulsoup4 openpyxl pandas plotly
 
 Запуск:
   streamlit run app.py
+
+Настройка API ключа:
+  1. Создайте файл .streamlit/secrets.toml
+  2. Добавьте: STEAM_API_KEY = "ВАШ_КЛЮЧ"
 """
 
 import streamlit as st
@@ -24,6 +28,7 @@ import io
 import plotly.express as px
 import plotly.graph_objects as go
 from collections import Counter
+import os
 
 # Настройка страницы
 st.set_page_config(
@@ -54,10 +59,6 @@ HEADERS = {
 }
 
 # Инициализация session state
-if 'api_key' not in st.session_state:
-    st.session_state.api_key = None
-if 'api_key_confirmed' not in st.session_state:
-    st.session_state.api_key_confirmed = False
 if 'parsed_results' not in st.session_state:
     st.session_state.parsed_results = None
 if 'current_page' not in st.session_state:
@@ -65,7 +66,51 @@ if 'current_page' not in st.session_state:
 if 'excel_data' not in st.session_state:
     st.session_state.excel_data = None
 
-# Словарь стран для карты
+# Получение API ключа из secrets или переменных окружения
+def get_api_key():
+    """Получает API ключ из secrets.toml или переменных окружения"""
+    try:
+        # Пробуем получить из secrets.toml (Streamlit Cloud)
+        api_key = st.secrets.get("STEAM_API_KEY")
+        if api_key:
+            return api_key
+    except:
+        pass
+    
+    # Пробуем получить из переменных окружения
+    api_key = os.environ.get("STEAM_API_KEY")
+    if api_key:
+        return api_key
+    
+    # Если ключ не найден, показываем инструкцию
+    st.error("""
+    ⚠️ **API ключ не найден!**
+    
+    Для работы приложения необходим Steam Web API Key.
+    
+    ### Способ 1: secrets.toml (рекомендуется)
+    Создайте файл `.streamlit/secrets.toml` и добавьте:
+    ```toml
+    STEAM_API_KEY = "ВАШ_32_СИМВОЛЬНЫЙ_КЛЮЧ"
+    ```
+    
+    ### Способ 2: Переменные окружения
+    ```bash
+    export STEAM_API_KEY="ВАШ_32_СИМВОЛЬНЫЙ_КЛЮЧ"
+    ```
+    
+    ### Как получить API ключ:
+    1. Перейдите на [steamcommunity.com/dev/apikey](https://steamcommunity.com/dev/apikey)
+    2. Войдите в свой Steam аккаунт
+    3. Заполните форму (Domain Name можно указать `localhost`)
+    4. Скопируйте полученный 32-символьный ключ
+    """)
+    st.stop()
+
+# Получаем API ключ
+API_KEY = get_api_key()
+
+# Словарь стран для карты (обновленный с Гватемалой и Тайванем)
 COUNTRY_NAMES = {
     'US': 'United States', 'RU': 'Russia', 'DE': 'Germany', 'GB': 'United Kingdom',
     'FR': 'France', 'CN': 'China', 'JP': 'Japan', 'BR': 'Brazil', 'CA': 'Canada',
@@ -79,10 +124,12 @@ COUNTRY_NAMES = {
     'VN': 'Vietnam', 'IN': 'India', 'PK': 'Pakistan', 'BD': 'Bangladesh', 'LK': 'Sri Lanka',
     'SA': 'Saudi Arabia', 'AE': 'United Arab Emirates', 'IL': 'Israel', 'EG': 'Egypt',
     'ZA': 'South Africa', 'AR': 'Argentina', 'CL': 'Chile', 'CO': 'Colombia', 'PE': 'Peru',
-    'VE': 'Venezuela', 'UY': 'Uruguay', 'EC': 'Ecuador', 'BO': 'Bolivia', 'PY': 'Paraguay'
+    'VE': 'Venezuela', 'UY': 'Uruguay', 'EC': 'Ecuador', 'BO': 'Bolivia', 'PY': 'Paraguay',
+    'GT': 'Guatemala', 'TW': 'Taiwan', 'TWN': 'Taiwan',  # Добавлены Гватемала и Тайвань
+    'CR': 'Costa Rica', 'PA': 'Panama', 'DO': 'Dominican Republic',  # Дополнительные страны
 }
 
-# Координаты стран для карты (широта, долгота)
+# Координаты стран для карты (широта, долгота) - обновленный
 COUNTRY_COORDINATES = {
     'US': (37.0902, -95.7129), 'RU': (61.5240, 105.3188), 'DE': (51.1657, 10.4515),
     'GB': (55.3781, -3.4360), 'FR': (46.6034, 1.8883), 'CN': (35.8617, 104.1954),
@@ -104,45 +151,10 @@ COUNTRY_COORDINATES = {
     'IL': (31.0461, 34.8516), 'EG': (26.8206, 30.8025), 'ZA': (-30.5595, 22.9375),
     'AR': (-38.4161, -63.6167), 'CL': (-35.6751, -71.5430), 'CO': (4.5709, -74.2973),
     'PE': (-9.1900, -75.0152), 'VE': (6.4238, -66.5897), 'UY': (-32.5228, -55.7658),
-    'EC': (-1.8312, -78.1834), 'BO': (-16.2902, -63.5887), 'PY': (-23.4425, -58.4438)
+    'EC': (-1.8312, -78.1834), 'BO': (-16.2902, -63.5887), 'PY': (-23.4425, -58.4438),
+    'GT': (15.7835, -90.2308), 'TW': (23.6978, 120.9605), 'TWN': (23.6978, 120.9605),  # Гватемала и Тайвань
+    'CR': (9.7489, -83.7534), 'PA': (8.5379, -80.7821), 'DO': (18.7357, -70.1627),  # Дополнительные
 }
-
-# -------------------------
-# Проверка API ключа
-# -------------------------
-
-if not st.session_state.api_key_confirmed:
-    st.title("🔑 Настройка Steam API Key")
-    st.markdown("""
-    Для работы парсера необходим **Steam Web API Key**.
-    
-    ### Как получить API ключ:
-    1. Перейдите на [steamcommunity.com/dev/apikey](https://steamcommunity.com/dev/apikey)
-    2. Войдите в свой Steam аккаунт
-    3. Заполните форму (Domain Name можно указать `localhost`)
-    4. Скопируйте полученный ключ и вставьте ниже
-    """)
-    
-    api_key_input = st.text_input(
-        "Введите ваш Steam API Key",
-        type="password",
-        placeholder="XXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXX"
-    )
-    
-    col1, col2 = st.columns([1, 4])
-    with col1:
-        if st.button("✅ Подтвердить", type="primary", use_container_width=True):
-            if api_key_input and len(api_key_input) == 32:
-                st.session_state.api_key = api_key_input
-                st.session_state.api_key_confirmed = True
-                st.rerun()
-            else:
-                st.error("❌ API ключ должен содержать 32 символа")
-    
-    st.info("💡 **Примечание:** API ключ сохраняется только для текущей сессии")
-    st.stop()
-
-API_KEY = st.session_state.api_key
 
 # -------------------------
 # Функции для работы с данными
@@ -259,12 +271,9 @@ def create_excel(results):
 
 st.sidebar.title("🎮 Steam Analytics")
 
+# Показываем замаскированный ключ
 masked_key = API_KEY[:4] + "..." + API_KEY[-4:]
 st.sidebar.info(f"🔑 API: `{masked_key}`")
-
-if st.sidebar.button("🔄 Изменить ключ", use_container_width=True):
-    st.session_state.api_key_confirmed = False
-    st.rerun()
 
 st.sidebar.markdown("---")
 
@@ -1187,9 +1196,9 @@ def render_games_page():
         df_top_active = df_recent.nlargest(5, 'hours_2weeks')
         
         for i, (_, row) in enumerate(df_top_active.iterrows()):
-            nickname = row ['nickname']
-            hours = row ['hours_2weeks']
-
+            nickname = row['nickname']
+            hours = row['hours_2weeks']
+            
             if i == 0:
                 st.success(f"🥇 **{nickname}**  \n{hours} ч")
             elif i == 1:
@@ -1198,6 +1207,7 @@ def render_games_page():
                 st.warning(f"🥉 **{nickname}**  \n{hours} ч")
             else:
                 st.write(f"**{nickname}**: {hours} ч")
+        
         # Статистика по активности
         st.markdown("---")
         st.subheader("📊 Статистика")
